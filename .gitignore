@@ -6,3 +6,4 @@ build
 *.nso
 *.nsp
 *.npdm
+sys-botbase/.vscode/c_cpp_properties.json

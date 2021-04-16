@@ -189,21 +189,21 @@ void readMem(u8* out, u64 offset, u64 size)
         printf("svcReadDebugProcessMemory: %d\n", rc);
 }
 
-void click(HidControllerKeys btn)
+void click(HidNpadButton btn)
 {
     initController();
     press(btn);
     svcSleepThread(buttonClickSleepTime * 1e+6L);
     release(btn);
 }
-void press(HidControllerKeys btn)
+void press(HidNpadButton btn)
 {
     initController();
     controllerState.buttons |= btn;
     hiddbgSetHdlsState(controllerHandle, &controllerState);
 }
 
-void release(HidControllerKeys btn)
+void release(HidNpadButton btn)
 {
     initController();
     controllerState.buttons &= ~btn;
@@ -213,7 +213,7 @@ void release(HidControllerKeys btn)
 void setStickState(int side, int dxVal, int dyVal)
 {
     initController();
-    if (side == JOYSTICK_LEFT)
+    if (side == 0)
     {	
         controllerState.analog_stick_l.x = dxVal;
 		controllerState.analog_stick_l.y = dyVal;
