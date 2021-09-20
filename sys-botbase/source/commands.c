@@ -21,6 +21,7 @@ u64 buttonClickSleepTime = 50;
 u64 keyPressSleepTime = 25;
 u64 pollRate = 17; // polling is linked to screen refresh rate (system UI) or game framerate. Most cases this is 1/60 or 1/30
 u32 fingerDiameter = 50;
+HiddbgHdlsSessionId sessionId = {0};
 
 void attach()
 {
@@ -40,6 +41,22 @@ void attach()
 void detach(){
     if (debughandle != 0)
         svcCloseHandle(debughandle);
+}
+
+void detachController()
+{
+    initController();
+
+    Result rc = hiddbgDetachHdlsVirtualDevice(controllerHandle);
+    if (R_FAILED(rc) && debugResultCodes)
+        printf("hiddbgDetachHdlsVirtualDevice: %d\n", rc);
+    rc = hiddbgReleaseHdlsWorkBuffer(sessionId);
+    if (R_FAILED(rc) && debugResultCodes)
+        printf("hiddbgReleaseHdlsWorkBuffer: %d\n", rc);
+    hiddbgExit();
+    bControllerIsInitialised = false;
+
+    sessionId.id = 0;
 }
 
 u64 getMainNsoBase(u64 pid){
@@ -140,7 +157,7 @@ void initController()
     controllerState.analog_stick_l.y = -0x0;
     controllerState.analog_stick_r.x = 0x0;
     controllerState.analog_stick_r.y = -0x0;
-    rc = hiddbgAttachHdlsWorkBuffer();
+    rc = hiddbgAttachHdlsWorkBuffer(&sessionId);
     if (R_FAILED(rc) && debugResultCodes)
         printf("hiddbgAttachHdlsWorkBuffer: %d\n", rc);
     rc = hiddbgAttachHdlsVirtualDevice(&controllerHandle, &controllerDevice);
@@ -150,7 +167,6 @@ void initController()
     dummyKeyboardState.keys[3] = 0x800000000000000UL; // Hackfix found by Red: an unused key press (KBD_MEDIA_CALC) is required to allow sequential same-key presses. bitfield[3]
     bControllerIsInitialised = true;
 }
-
 
 void poke(u64 offset, u64 size, u8* val)
 {
@@ -200,14 +216,18 @@ void press(HidNpadButton btn)
 {
     initController();
     controllerState.buttons |= btn;
-    hiddbgSetHdlsState(controllerHandle, &controllerState);
+    Result rc = hiddbgSetHdlsState(controllerHandle, &controllerState);
+    if (R_FAILED(rc) && debugResultCodes)
+        printf("hiddbgSetHdlsState: %d\n", rc);
 }
 
 void release(HidNpadButton btn)
 {
     initController();
     controllerState.buttons &= ~btn;
-    hiddbgSetHdlsState(controllerHandle, &controllerState);
+    Result rc = hiddbgSetHdlsState(controllerHandle, &controllerState);
+    if (R_FAILED(rc) && debugResultCodes)
+        printf("hiddbgSetHdlsState: %d\n", rc);
 }
 
 void setStickState(int side, int dxVal, int dyVal)
@@ -261,7 +281,7 @@ u64 followMainPointer(s64* jumps, size_t count)
     return offset;
 }
 
-void touch(HidTouchState* state, u64 sequentialCount, u64 holdTime, bool hold)
+void touch(HidTouchState* state, u64 sequentialCount, u64 holdTime, bool hold, u8* token)
 {
     initController();
     state->delta_time = holdTime; // only the first touch needs this for whatever reason
@@ -274,6 +294,9 @@ void touch(HidTouchState* state, u64 sequentialCount, u64 holdTime, bool hold)
             hiddbgSetTouchScreenAutoPilotState(NULL, 0);
             svcSleepThread(pollRate * 1e+6L);
         }
+
+        if ((*token) == 1)
+            break;
     }
 
     if(hold) // send finger release event
@@ -313,4 +336,81 @@ void key(HiddbgKeyboardAutoPilotState* states, u64 sequentialCount)
     }
 
     hiddbgUnsetKeyboardAutoPilotState();
+}
+
+void clickSequence(char* seq, u8* token)
+{
+    const char delim = ','; // used for chars and sticks
+    const char startWait = 'W';
+    const char startPress = '+';
+    const char startRelease = '-';
+    const char startLStick = '%';
+    const char startRStick = '&';
+    char* command = strtok(seq, &delim);
+    HidNpadButton currKey = {0};
+    u64 currentWait = 0;
+
+    initController();
+    while (command != NULL)
+    {
+        if ((*token) == 1)
+            break;
+
+        if (!strncmp(command, &startLStick, 1))
+        {
+            // l stick
+            s64 x = parseStringToSignedLong(&command[1]);
+            if(x > JOYSTICK_MAX) x = JOYSTICK_MAX; 
+            if(x < JOYSTICK_MIN) x = JOYSTICK_MIN; 
+            s64 y = 0;
+            command = strtok(NULL, &delim);
+            if (command != NULL)
+                y = parseStringToSignedLong(command);
+            if(y > JOYSTICK_MAX) y = JOYSTICK_MAX;
+            if(y < JOYSTICK_MIN) y = JOYSTICK_MIN;
+            setStickState(JOYSTICK_LEFT, (s32)x, (s32)y);
+        }
+        else if (!strncmp(command, &startRStick, 1))
+        {
+            // r stick
+            s64 x = parseStringToSignedLong(&command[1]);
+            if(x > JOYSTICK_MAX) x = JOYSTICK_MAX; 
+            if(x < JOYSTICK_MIN) x = JOYSTICK_MIN; 
+            s64 y = 0;
+            command = strtok(NULL, &delim);
+            if (command != NULL)
+                y = parseStringToSignedLong(command);
+            if(y > JOYSTICK_MAX) y = JOYSTICK_MAX;
+            if(y < JOYSTICK_MIN) y = JOYSTICK_MIN;
+            setStickState(JOYSTICK_RIGHT, (s32)x, (s32)y);
+        }
+        else if (!strncmp(command, &startPress, 1))
+        {
+            // press
+            currKey = parseStringToButton(&command[1]);
+            press(currKey);
+        }  
+        else if (!strncmp(command, &startRelease, 1))
+        {
+            // release
+            currKey = parseStringToButton(&command[1]);
+            press(currKey);
+        }   
+        else if (!strncmp(command, &startWait, 1))
+        {
+            // wait
+            currentWait = parseStringToInt(&command[1]);
+            svcSleepThread(currentWait * 1e+6l);
+        }
+        else
+        {
+            // click
+            currKey = parseStringToButton(command);
+            press(currKey);
+            svcSleepThread(buttonClickSleepTime * 1e+6L);
+            release(currKey);
+        }
+
+        command = strtok(NULL, &delim);
+    }
 }
